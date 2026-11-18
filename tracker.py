@@ -25,12 +25,16 @@ import requests
 API_URL = "https://www.gamerpower.com/api/giveaways"
 
 DEFAULT_CONFIG = {
-    "keywords": ["resident evil"],      # [] = ловити ВСІ роздачі
+    "keywords": [],                     # [] = ловити ВСІ роздачі ігор/ключів
     "check_interval_minutes": 15,
     "types": ["game"],                  # "game" / "loot" / "dlc"
     "copy_to_clipboard": True,
     "auto_open_browser": False,
+    "autostart": True,                  # запускатися разом із Windows
 }
+
+APP_RUN_NAME = "GiveawayCatcher"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 # ----------------------- шляхи поряд з .exe -----------------------
@@ -68,6 +72,7 @@ def load_config():
         if isinstance(user, dict):
             cfg.update(user)
     except FileNotFoundError:
+        # створюємо приклад конфігу поряд з .exe
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
@@ -115,6 +120,43 @@ def notify(title, message, url=None):
         toast.show()
     except Exception as e:
         log("Сповіщення недоступне (%s): %s — %s" % (e, title, message))
+
+
+# --------------------- автозапуск із Windows ---------------------
+
+def _exe_path():
+    if getattr(sys, "frozen", False):
+        return sys.executable
+    return os.path.abspath(__file__)
+
+
+def autostart_enabled():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+            val, _ = winreg.QueryValueEx(k, APP_RUN_NAME)
+            return bool(val)
+    except Exception:
+        return False
+
+
+def set_autostart(enable):
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                            winreg.KEY_SET_VALUE) as k:
+            if enable:
+                winreg.SetValueEx(k, APP_RUN_NAME, 0, winreg.REG_SZ,
+                                  '"%s"' % _exe_path())
+            else:
+                try:
+                    winreg.DeleteValue(k, APP_RUN_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception as e:
+        log("Автозапуск: не вдалося змінити (%s)" % e)
+        return False
 
 
 def fetch_giveaways(types):
@@ -197,6 +239,7 @@ class Tracker:
         while not self.stop_event.is_set():
             self.check_once(announce=False if first else True)
             first = False
+            # чекаємо інтервал, але реагуємо на «Вийти» одразу
             self.stop_event.wait(interval * 60)
 
 
@@ -206,10 +249,11 @@ def make_icon_image():
     from PIL import Image, ImageDraw
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
+    # проста «подарункова коробка»
     d.rectangle([12, 28, 52, 56], fill=(220, 50, 50, 255))
     d.rectangle([12, 20, 52, 30], fill=(200, 30, 30, 255))
-    d.rectangle([30, 20, 34, 56], fill=(255, 220, 90, 255))
-    d.rectangle([12, 26, 52, 30], fill=(255, 220, 90, 255))
+    d.rectangle([30, 20, 34, 56], fill=(255, 220, 90, 255))   # вертикальна стрічка
+    d.rectangle([12, 26, 52, 30], fill=(255, 220, 90, 255))   # горизонтальна стрічка
     return img
 
 
@@ -237,13 +281,29 @@ def run_with_tray(tracker):
 
     def on_open_folder(icon, item):
         try:
-            os.startfile(BASE)
+            os.startfile(BASE)  # noqa (Windows only)
         except Exception:
             webbrowser.open(BASE)
+
+    def on_toggle_autostart(icon, item):
+        new_state = not autostart_enabled()
+        if set_autostart(new_state):
+            notify("Ловець роздач",
+                   "Автозапуск з Windows %s." % ("увімкнено" if new_state else "вимкнено"))
 
     def on_quit(icon, item):
         tracker.stop_event.set()
         icon.stop()
+
+    # один раз автоматично вмикаємо автозапуск (якщо так налаштовано)
+    marker = os.path.join(BASE, ".autostart_done")
+    if tracker.cfg.get("autostart", True) and not os.path.exists(marker):
+        if set_autostart(True):
+            log("Автозапуск з Windows увімкнено.")
+        try:
+            open(marker, "w").close()
+        except Exception:
+            pass
 
     kw = tracker.cfg.get("keywords") or "усі ігри"
     menu = pystray.Menu(
@@ -252,6 +312,8 @@ def run_with_tray(tracker):
         Item("Перевірити зараз", on_check, default=True),
         Item("Відкрити останню роздачу", on_open_last),
         Item("Відкрити папку (лог/налаштування)", on_open_folder),
+        Item("Автозапуск з Windows", on_toggle_autostart,
+             checked=lambda i: autostart_enabled()),
         Item("Вийти", on_quit),
     )
     icon = pystray.Icon("giveaway", make_icon_image(),
@@ -266,6 +328,7 @@ def main():
     try:
         run_with_tray(tracker)
     except Exception as e:
+        # якщо трей недоступний — працюємо просто фоном
         log("Трей недоступний (%s), працюю без іконки." % e)
         tracker.run_loop()
 
