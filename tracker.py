@@ -2,8 +2,8 @@
 """
 Ловець легальних роздач ігор — фоновий застосунок для Windows (один .exe).
 
-Стежить за офіційними безкоштовними роздачами через публічний API GamerPower
-(Epic Games, Steam, GOG, Prime Gaming тощо). Коли з'являється нова роздача,
+Стежить за офіційними безкоштовними роздачами ДЛЯ STEAM через публічний API
+GamerPower. Коли з'являється нова роздача,
 що підходить під ключові слова:
   - показує сповіщення Windows,
   - КОПІЮЄ посилання на роздачу в буфер обміну (Ctrl+V — і вставив),
@@ -26,6 +26,7 @@ API_URL = "https://www.gamerpower.com/api/giveaways"
 
 DEFAULT_CONFIG = {
     "keywords": [],                     # [] = ловити ВСІ роздачі ігор/ключів
+    "platforms": ["steam"],             # лише Steam; [] = будь-які платформи
     "check_interval_minutes": 15,
     "types": ["game"],                  # "game" / "loot" / "dlc"
     "copy_to_clipboard": True,
@@ -159,10 +160,12 @@ def set_autostart(enable):
         return False
 
 
-def fetch_giveaways(types):
+def fetch_giveaways(types, platforms):
     params = {}
-    if types:
-        params["type"] = ".".join(types)
+    if types and len(types) == 1:
+        params["type"] = types[0]
+    if platforms and len(platforms) == 1:
+        params["platform"] = platforms[0]
     r = requests.get(API_URL, params=params, timeout=30,
                      headers={"User-Agent": "giveaway-tracker"})
     r.raise_for_status()
@@ -177,6 +180,23 @@ def matches(giveaway, keywords):
     return any(kw.lower() in title for kw in keywords)
 
 
+def platform_ok(giveaway, platforms):
+    """Перевіряє поле platforms (напр. "PC, Steam") — щоб точно лише Steam."""
+    if not platforms:
+        return True
+    have = (giveaway.get("platforms") or "").lower()
+    return any(p.lower().replace("-", " ") in have for p in platforms)
+
+
+def types_ok(giveaway, types):
+    if not types:
+        return True
+    t = (giveaway.get("type") or "").lower()
+    if not t:
+        return True
+    return any(x.lower() in t for x in types)
+
+
 # ----------------------------- логіка -----------------------------
 
 class Tracker:
@@ -189,7 +209,7 @@ class Tracker:
     def check_once(self, announce=True):
         cfg = self.cfg
         try:
-            giveaways = fetch_giveaways(cfg.get("types"))
+            giveaways = fetch_giveaways(cfg.get("types"), cfg.get("platforms"))
         except Exception as e:
             log("Помилка запиту до API: %s" % e)
             if announce:
@@ -202,7 +222,9 @@ class Tracker:
             gid = str(g.get("id"))
             if gid in self.seen:
                 continue
-            if matches(g, cfg.get("keywords")):
+            if (matches(g, cfg.get("keywords"))
+                    and platform_ok(g, cfg.get("platforms"))
+                    and types_ok(g, cfg.get("types"))):
                 new_hits.append(g)
             self.seen.add(gid)
 
@@ -231,7 +253,9 @@ class Tracker:
     def run_loop(self):
         kw = self.cfg.get("keywords") or "ВСІ"
         interval = max(1, int(self.cfg.get("check_interval_minutes", 15)))
-        log("Запущено. Ключові слова: %s | інтервал: %d хв" % (kw, interval))
+        pf = self.cfg.get("platforms") or "будь-які"
+        log("Запущено. Ключові слова: %s | платформи: %s | інтервал: %d хв"
+            % (kw, pf, interval))
         first = len(self.seen) == 0
         if first:
             log("Перший запуск — знайомлюся з поточними роздачами; "
@@ -305,10 +329,11 @@ def run_with_tray(tracker):
         except Exception:
             pass
 
-    kw = tracker.cfg.get("keywords") or "усі ігри"
+    kw = tracker.cfg.get("keywords") or ["усі ігри"]
+    pf = tracker.cfg.get("platforms") or ["будь-які платформи"]
+    label = "Ловлю: %s · %s" % (", ".join(kw), ", ".join(p.capitalize() for p in pf))
     menu = pystray.Menu(
-        Item("Ловлю: %s" % (", ".join(kw) if isinstance(kw, list) else kw),
-             None, enabled=False),
+        Item(label, None, enabled=False),
         Item("Перевірити зараз", on_check, default=True),
         Item("Відкрити останню роздачу", on_open_last),
         Item("Відкрити папку (лог/налаштування)", on_open_folder),
@@ -317,9 +342,9 @@ def run_with_tray(tracker):
         Item("Вийти", on_quit),
     )
     icon = pystray.Icon("giveaway", make_icon_image(),
-                        "Ловець легальних роздач", menu)
-    notify("Ловець роздач запущено",
-           "Працюю у треї. Знайду роздачу — скопіюю посилання й сповіщу.")
+                        "Ловець роздач Steam", menu)
+    notify("Ловець роздач Steam запущено",
+           "Працюю у треї. Знайду роздачу для Steam — скопіюю посилання й сповіщу.")
     icon.run()
 
 
