@@ -9,7 +9,7 @@ on:
       - .github/workflows/build-apk.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -42,3 +42,13 @@ jobs:
           name: Steam-Giveaway-Catcher-apk
           path: Steam-Giveaway-Catcher.apk
           if-no-files-found: error
+
+      - name: Commit APK to repo
+        run: |
+          mkdir -p releases
+          cp Steam-Giveaway-Catcher.apk releases/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add releases/Steam-Giveaway-Catcher.apk
+          git commit -m "APK: збірка ${GITHUB_SHA::7}" || echo "без змін"
+          git push origin HEAD:${GITHUB_REF_NAME}
